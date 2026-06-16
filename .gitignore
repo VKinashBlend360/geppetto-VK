@@ -1,0 +1,10 @@
+# Secrets (never share)
+.env
+.env.*
+!.env.example
+
+# Too big for GitHub (216 MB) — the .mp3 of the same meeting is still shared
+meetings/March_Meeting.wav
+
+# OS junk
+.DS_Store
