@@ -93,6 +93,7 @@ async def session_chunk(sid: str, request: Request):
         return JSONResponse(status_code=202, content={"status": "skipped"})
     for a in alerts:
         await manager.send_alert(sid, a)
+    await manager.send_transcript(sid, session.rolling_transcript)
     await manager.send_status(sid, "listening", session.claim_count)
     return JSONResponse(status_code=202, content={"alerts": len(alerts)})
 
@@ -175,266 +176,304 @@ DASHBOARD_HTML = r”””<!DOCTYPE html>
 <meta charset=”UTF-8”><meta name=”viewport” content=”width=device-width, initial-scale=1.0”>
 <title>Meeting Truth Layer — Live</title>
 <style>
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;background:#0d0d0d;color:#e0e0e0}
-  header{background:linear-gradient(135deg,#1a1a2e,#16213e);color:#fff;padding:16px 24px;display:flex;align-items:center;gap:16px;transition:all .2s;border-bottom:1px solid #2a2a2a}
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;background:#0d0d0d;color:#e0e0e0;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+  header{background:linear-gradient(135deg,#1a1a2e,#16213e);color:#fff;padding:10px 20px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #2a2a2a;flex-shrink:0}
   header.hidden{display:none}
-  header h1{font-size:18px;margin:0;flex:1}
-  .status{font-size:13px;opacity:.9}
-  button{font:inherit;border:0;border-radius:6px;padding:8px 14px;cursor:pointer}
+  header h1{font-size:16px;margin:0;flex:1}
+  .status{font-size:12px;opacity:.9;background:#ffffff18;padding:3px 8px;border-radius:12px}
+  button{font:inherit;border:0;border-radius:6px;padding:7px 14px;cursor:pointer}
   .btn-start{background:#28a745;color:#fff}.btn-end{background:#dc3545;color:#fff}
-  .btn-secondary{background:#3a3a3a;color:#ccc;font-size:13px;padding:6px 10px}
-  .wrap{display:flex;height:calc(100vh - 56px);transition:all .2s}
-  .wrap.fullscreen{height:100vh}
-  .side{width:280px;background:#111;border-right:1px solid #2a2a2a;overflow-y:auto;padding:12px;transition:all .2s}
-  .side.hidden{display:none;width:0}
-  .side h2{font-size:13px;text-transform:uppercase;color:#666;margin:8px 4px}
-  .mtg{padding:10px;border:1px solid #2a2a2a;border-radius:6px;margin:6px 0;cursor:pointer;font-size:13px;background:#1a1a1a}
-  .mtg:hover{background:#222}.mtg .nm{font-weight:600;color:#e0e0e0}.mtg .meta{color:#888;font-size:12px;margin-top:4px}
-  .mtg .del{float:right;color:#c00;cursor:pointer;font-size:12px}
-  .main{flex:1;overflow-y:auto;padding:16px 20px;background:#0d0d0d}
-  .toolbar{display:flex;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
-  .search-box{flex:1;min-width:200px}
-  .search-box input{width:100%;padding:8px 12px;border:1px solid #2a2a2a;border-radius:6px;font-size:13px;background:#1a1a1a;color:#e0e0e0}
-  .filters{display:flex;gap:6px;flex-wrap:wrap}
-  .filter-btn{background:#1a1a1a;border:1px solid #2a2a2a;color:#aaa;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s}
-  .filter-btn.active{background:#4a4a8a;color:#fff;border-color:#4a4a8a}
-  .sort-control{display:flex;gap:8px;align-items:center}
-  .sort-control select{padding:6px 10px;border:1px solid #2a2a2a;border-radius:6px;font-size:13px;background:#1a1a1a;color:#e0e0e0}
-  .stats-panel{background:#111;border-radius:8px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.4);border:1px solid #2a2a2a}
-  .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:12px}
-  .stat-card{text-align:center}
-  .stat-count{font-size:24px;font-weight:700;color:#7a7aee}
-  .stat-label{font-size:11px;text-transform:uppercase;color:#666;margin-top:4px}
-  .bar{display:flex;align-items:center;gap:12px;margin-bottom:12px}
-  .count{font-size:13px;color:#888}
-  .cmd{background:#1e1e1e;color:#ddd;padding:8px 10px;border-radius:6px;font-family:monospace;font-size:12px;margin:8px 0;white-space:pre-wrap;border:1px solid #333}
-  .alerts-container{transition:all .2s}
-  .alert{background:#111;border-radius:8px;padding:12px 14px;margin:8px 0;border-left:5px solid #333;box-shadow:0 1px 3px rgba(0,0,0,.4);transition:all .2s;border-top:1px solid #222;border-right:1px solid #222;border-bottom:1px solid #222}
+  .btn-secondary{background:#2a2a2a;color:#aaa;font-size:12px;padding:5px 10px}
+
+  /* ── main layout ── */
+  .app-body{display:flex;flex:1;overflow:hidden}
+  .side{width:240px;background:#111;border-right:1px solid #222;overflow-y:auto;padding:10px;flex-shrink:0}
+  .side.hidden{display:none}
+  .side h2{font-size:11px;text-transform:uppercase;color:#555;margin:6px 4px 8px}
+  .mtg{padding:9px;border:1px solid #222;border-radius:6px;margin:5px 0;cursor:pointer;font-size:12px;background:#181818}
+  .mtg:hover{background:#222}.mtg .nm{font-weight:600;color:#ddd}.mtg .meta{color:#777;font-size:11px;margin-top:3px}
+  .mtg .del{float:right;color:#c00;cursor:pointer;font-size:11px}
+
+  /* ── live area: alerts + transcript side-by-side ── */
+  .live-area{flex:1;display:flex;flex-direction:column;overflow:hidden}
+  .live-panels{flex:1;display:flex;overflow:hidden}
+
+  /* alerts column */
+  .alerts-col{flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+  .cmd{background:#1a1a1a;color:#bbb;padding:8px 10px;border-radius:6px;font-family:monospace;font-size:11px;margin-bottom:4px;white-space:pre-wrap;border:1px solid #2a2a2a}
+  .alert{background:#141414;border-radius:10px;padding:0;border:1px solid #2a2a2a;overflow:hidden;transition:all .2s}
   .alert.hidden{display:none}
-  .alert .cat{font-weight:700;font-size:12px;letter-spacing:.04em}
-  .alert .claim{font-size:15px;margin:4px 0;color:#e0e0e0}
-  .alert .src{font-size:12px;color:#888}.alert .sug{font-size:13px;color:#bbb;margin-top:6px}
-  .alert .conf{float:right;font-size:11px;color:#666}
-  .VERIFIED{border-left-color:#28a745}.CONTRADICTED{border-left-color:#dc3545}
-  .UNVERIFIED{border-left-color:#ffc107}.OUTDATED{border-left-color:#6c757d}
-  .NEEDS_CLARIFICATION{border-left-color:#17a2b8}
-  .cat.VERIFIED{color:#28a745}.cat.CONTRADICTED{color:#dc3545}.cat.UNVERIFIED{color:#b8860b}
-  .cat.OUTDATED{color:#6c757d}.cat.NEEDS_CLARIFICATION{color:#17a2b8}
-  .toast{position:fixed;bottom:16px;right:16px;background:#222;color:#fff;padding:10px 14px;border-radius:6px;font-size:13px;opacity:.95;border:1px solid #444}
-  .empty{color:#555;text-align:center;margin-top:40px}
-  .modal{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center}
-  .modal .box{background:#111;border:1px solid #333;width:80%;max-width:800px;max-height:80vh;overflow:auto;border-radius:8px;padding:20px;color:#e0e0e0}
-  .toggle-fullscreen{position:fixed;bottom:16px;left:16px;background:#2a2a4a;color:#fff;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:12px;z-index:999}
+  .alert-header{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer}
+  .alert-badge{display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:.05em;flex-shrink:0}
+  .badge-icon{font-size:12px}
+  .alert-claim{font-size:13px;color:#ddd;flex:1;line-height:1.4}
+  .alert-chevron{color:#555;font-size:12px;transition:transform .2s;flex-shrink:0}
+  .alert.open .alert-chevron{transform:rotate(180deg)}
+  .alert-body{display:none;padding:0 14px 12px;font-size:12px;color:#999;border-top:1px solid #222;margin-top:0;padding-top:10px}
+  .alert.open .alert-body{display:block}
+  .alert-src{margin-bottom:6px}
+  .alert-sug{color:#bbb;font-style:italic}
+  .alert-conf{float:right;font-size:11px;color:#555;margin-top:-2px}
+  .VERIFIED .alert-badge{background:#1a3a1a;color:#4caf50;border:1px solid #2d5a2d}
+  .CONTRADICTED .alert-badge{background:#3a1a1a;color:#ef5350;border:1px solid #5a2d2d}
+  .UNVERIFIED .alert-badge{background:#3a3010;color:#ffc107;border:1px solid #5a4a10}
+  .OUTDATED .alert-badge{background:#2a2a2a;color:#888;border:1px solid #3a3a3a}
+  .NEEDS_CLARIFICATION .alert-badge{background:#0d2a30;color:#17a2b8;border:1px solid #0d3a44}
+  .empty{color:#444;text-align:center;margin-top:40px;font-size:13px}
+
+  /* transcript panel */
+  .transcript-panel{width:340px;background:#111;border-left:1px solid #222;display:flex;flex-direction:column;flex-shrink:0}
+  .transcript-panel.hidden{display:none}
+  .transcript-header{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #222;font-size:11px;text-transform:uppercase;color:#555;letter-spacing:.08em}
+  .transcript-header button{background:none;color:#555;font-size:11px;padding:2px 6px;border:1px solid #333;border-radius:4px}
+  .transcript-body{flex:1;overflow-y:auto;padding:14px;font-size:13px;line-height:1.7;color:#bbb}
+  .transcript-body .t-new{color:#e0e0e0}
+
+  /* waveform + record bar */
+  .bottom-bar{flex-shrink:0;height:80px;background:#0a0a0a;border-top:1px solid #1e1e1e;display:flex;align-items:center;justify-content:center;position:relative}
+  #waveCanvas{position:absolute;inset:0;width:100%;height:100%;opacity:.6}
+  .record-btn{position:relative;z-index:2;width:44px;height:44px;border-radius:50%;border:3px solid #ff4444;background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .2s}
+  .record-btn.active{background:#ff4444}
+  .record-btn .dot{width:16px;height:16px;border-radius:50%;background:#ff4444;transition:all .2s}
+  .record-btn.active .dot{width:12px;height:12px;border-radius:3px;background:#fff}
+
+  /* filters + stats */
+  .filters-bar{display:flex;gap:6px;flex-wrap:wrap;padding:8px 14px;border-bottom:1px solid #1e1e1e;flex-shrink:0;align-items:center}
+  .filter-btn{background:#1a1a1a;border:1px solid #2a2a2a;color:#888;padding:4px 10px;border-radius:20px;cursor:pointer;font-size:11px;transition:all .2s}
+  .filter-btn.active{background:#3a3a6a;color:#aac;border-color:#4a4a8a}
+  .stats-inline{margin-left:auto;font-size:11px;color:#555}
+
+  /* misc */
+  .toast{position:fixed;bottom:16px;right:16px;background:#1e1e1e;color:#ddd;padding:10px 14px;border-radius:6px;font-size:12px;opacity:.95;border:1px solid #333;z-index:999}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.75);display:none;align-items:center;justify-content:center;z-index:100}
+  .modal .box{background:#111;border:1px solid #333;width:80%;max-width:800px;max-height:80vh;overflow:auto;border-radius:8px;padding:20px;color:#ddd}
+  .toggle-fullscreen{position:fixed;bottom:90px;left:16px;background:#1e1e2e;color:#aaa;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:11px;z-index:999;border:1px solid #333}
   .toggle-fullscreen.hidden{display:none}
 </style>
 </head>
 <body>
 <header>
-  <h1>📡 Meeting Truth Layer — Live</h1>
+  <h1>📡 Geppetto — Meeting Truth Layer</h1>
   <span class=”status” id=”status”>idle</span>
-  <span class=”count” id=”count”></span>
+  <span id=”count” style=”font-size:12px;color:#888”></span>
   <button class=”btn-start” id=”startBtn”>Start live meeting</button>
   <button class=”btn-end” id=”endBtn” style=”display:none”>End meeting</button>
-  <button class=”btn-secondary” id=”togglePanelsBtn”>Hide panels</button>
+  <button class=”btn-secondary” id=”togglePanelsBtn”>Hide history</button>
 </header>
-<div class=”wrap”>
-  <aside class=”side”>
+
+<div class=”app-body”>
+  <!-- history sidebar -->
+  <aside class=”side” id=”sidePanel”>
     <h2>Meeting history</h2>
     <div id=”history”></div>
   </aside>
-  <main class=”main”>
-    <div id=”cmd”></div>
 
-    <div class=”toolbar”>
-      <div class=”search-box”>
-        <input type=”text” id=”searchInput” placeholder=”Search alerts by keyword...”>
-      </div>
-      <div class=”sort-control”>
-        <select id=”sortSelect”>
-          <option value=”time”>Time Received</option>
-          <option value=”confidence”>Confidence Score</option>
-          <option value=”priority”>Priority</option>
-        </select>
-      </div>
-    </div>
-
-    <div class=”filters”>
+  <!-- live area -->
+  <div class=”live-area”>
+    <!-- filter bar -->
+    <div class=”filters-bar”>
       <button class=”filter-btn active” data-filter=”all”>All</button>
       <button class=”filter-btn” data-filter=”VERIFIED”>✓ Verified</button>
       <button class=”filter-btn” data-filter=”CONTRADICTED”>✗ Contradicted</button>
       <button class=”filter-btn” data-filter=”UNVERIFIED”>? Unverified</button>
-      <button class=”filter-btn” data-filter=”NEEDS_CLARIFICATION”>! Needs Clarification</button>
+      <button class=”filter-btn” data-filter=”NEEDS_CLARIFICATION”>! Clarification</button>
       <button class=”filter-btn” data-filter=”OUTDATED”>⏰ Outdated</button>
+      <span class=”stats-inline” id=”statsInline”></span>
     </div>
 
-    <div class=”stats-panel” id=”statsPanel” style=”display:none”>
-      <div class=”stats-grid”>
-        <div class=”stat-card”>
-          <div class=”stat-count” id=”statTotal”>0</div>
-          <div class=”stat-label”>Total</div>
+    <!-- alerts + transcript -->
+    <div class=”live-panels”>
+      <!-- alerts column -->
+      <div class=”alerts-col” id=”alerts”>
+        <div class=”empty”>No live session. Click “Start live meeting”.</div>
+      </div>
+
+      <!-- live transcript -->
+      <div class=”transcript-panel” id=”transcriptPanel”>
+        <div class=”transcript-header”>
+          <span>Transcript completo</span>
+          <button id=”hideTranscriptBtn”>Nascondi</button>
         </div>
-        <div class=”stat-card”>
-          <div class=”stat-count” id=”statVerified” style=”color:#28a745”>0</div>
-          <div class=”stat-label”>Verified</div>
-        </div>
-        <div class=”stat-card”>
-          <div class=”stat-count” id=”statContradicted” style=”color:#dc3545”>0</div>
-          <div class=”stat-label”>Contradicted</div>
-        </div>
-        <div class=”stat-card”>
-          <div class=”stat-count” id=”statUnverified” style=”color:#b8860b”>0</div>
-          <div class=”stat-label”>Unverified</div>
-        </div>
-        <div class=”stat-card”>
-          <div class=”stat-count” id=”statNeeds” style=”color:#17a2b8”>0</div>
-          <div class=”stat-label”>Needs Clarification</div>
-        </div>
-        <div class=”stat-card”>
-          <div class=”stat-count” id=”statOutdated” style=”color:#6c757d”>0</div>
-          <div class=”stat-label”>Outdated</div>
+        <div class=”transcript-body” id=”transcriptBody”>
+          <span style=”color:#444”>Transcript will appear here when the meeting starts...</span>
         </div>
       </div>
     </div>
 
-    <div class=”alerts-container” id=”alerts”><div class=”empty”>No live session. Click “Start live meeting”.</div></div>
-  </main>
+    <!-- waveform + record button -->
+    <div class=”bottom-bar” id=”bottomBar”>
+      <canvas id=”waveCanvas”></canvas>
+      <div class=”record-btn” id=”recordBtn” title=”Start / End meeting”>
+        <div class=”dot”></div>
+      </div>
+    </div>
+
+    <div id=”cmd” style=”display:none”></div>
+  </div>
 </div>
+
 <div class=”modal” id=”modal”><div class=”box” id=”modalBox”></div></div>
-<button class=”toggle-fullscreen hidden” id=”toggleFullscreenBtn”>Show panels</button>
+<button class=”toggle-fullscreen hidden” id=”toggleFullscreenBtn”>Show history</button>
 
 <script>
 let sid=null, ws=null, reconnectTimer=null;
-let allAlerts=[];
-let activeFilter='all';
-let currentSort='time';
-let panelsHidden=false;
+let allAlerts=[], activeFilter='all', isLive=false;
 const $=id=>document.getElementById(id);
 const params=new URLSearchParams(location.search);
 
+/* ── WebSocket ── */
 function wsUrl(id){const p=location.protocol==='https:'?'wss':'ws';return `${p}://${location.host}/ws/session/${id}`;}
-
 function connectWS(id){
-  sid=id;
-  ws=new WebSocket(wsUrl(id));
+  sid=id; ws=new WebSocket(wsUrl(id));
   ws.onmessage=e=>handle(JSON.parse(e.data));
   ws.onclose=()=>{ if(sid){ clearTimeout(reconnectTimer); reconnectTimer=setTimeout(()=>connectWS(sid),1500);} };
 }
-
 function handle(msg){
   if(msg.type==='alert') addAlert(msg.data);
-  else if(msg.type==='status'){ $('status').textContent=msg.data.status; $('count').textContent=msg.data.claim_count+' claims'; }
+  else if(msg.type==='transcript') updateTranscript(msg.data.text);
+  else if(msg.type==='status'){
+    $('status').textContent=msg.data.status;
+    $('count').textContent=msg.data.claim_count? msg.data.claim_count+' claims' :'';
+    if(msg.data.status==='processing') animateWave();
+  }
   else if(msg.type==='warning') toast(msg.data.message);
   else if(msg.type==='ended'){ toast('Saved: '+msg.data.folder_name); endedUI(); loadHistory(); }
 }
 
+/* ── transcript ── */
+function updateTranscript(text){
+  const el=$('transcriptBody');
+  el.innerHTML='<span class=”t-new”>'+esc(text)+'</span>';
+  el.scrollTop=el.scrollHeight;
+}
+
+/* ── alerts ── */
+const BADGE={
+  VERIFIED:    {icon:'✓', label:'Confermato'},
+  CONTRADICTED:{icon:'✗', label:'Falso'},
+  UNVERIFIED:  {icon:'?', label:'Non verificato'},
+  OUTDATED:    {icon:'⏰',label:'Superato'},
+  NEEDS_CLARIFICATION:{icon:'!',label:'Chiarimento'},
+};
 function addAlert(a){
   allAlerts.unshift(a);
-  $('statsPanel').style.display='block';
+  renderAlerts();
   updateStats();
-  applyFiltersAndSort();
 }
-
-function updateStats(){
-  const counts={VERIFIED:0,CONTRADICTED:0,UNVERIFIED:0,OUTDATED:0,NEEDS_CLARIFICATION:0};
-  allAlerts.forEach(a=>{counts[a.category]=(counts[a.category]||0)+1});
-  $('statTotal').textContent=allAlerts.length;
-  $('statVerified').textContent=counts.VERIFIED;
-  $('statContradicted').textContent=counts.CONTRADICTED;
-  $('statUnverified').textContent=counts.UNVERIFIED;
-  $('statNeeds').textContent=counts.NEEDS_CLARIFICATION;
-  $('statOutdated').textContent=counts.OUTDATED;
-}
-
-function applyFiltersAndSort(){
-  const searchText=$('searchInput').value.toLowerCase();
+function renderAlerts(){
   const box=$('alerts');
+  const filtered=allAlerts.filter(a=>activeFilter==='all'||a.category===activeFilter);
+  if(filtered.length===0){ box.innerHTML='<div class=”empty”>No alerts match the current filter.</div>'; return; }
   if(box.querySelector('.empty')) box.innerHTML='';
-
-  let filtered=allAlerts.filter(a=>{
-    const matchesSearch=!searchText||a.claim_text.toLowerCase().includes(searchText)||a.category.toLowerCase().includes(searchText);
-    const matchesFilter=activeFilter==='all'||a.category===activeFilter;
-    return matchesSearch&&matchesFilter;
-  });
-
-  if(currentSort==='confidence'){
-    filtered.sort((a,b)=>(b.confidence_score||0)-(a.confidence_score||0));
-  }else if(currentSort==='priority'){
-    const priorityOrder={CRITICAL:0,HIGH:1,MEDIUM:2,LOW:3};
-    filtered.sort((a,b)=>(priorityOrder[a.priority]||3)-(priorityOrder[b.priority]||3));
-  }
-
-  const existingIds=new Set([...box.querySelectorAll('.alert')].map(e=>e.dataset.id));
+  /* rebuild only new top item to avoid losing open state */
+  const existing=new Set([...box.querySelectorAll('.alert')].map(e=>e.dataset.cid));
   filtered.forEach((a,i)=>{
-    const id='alert-'+Math.random();
-    if(existingIds.has(id)) return;
+    const cid=a.claim_text.slice(0,60);
+    if(existing.has(cid)) return;
+    const b=BADGE[a.category]||{icon:'•',label:a.category};
     const ev=(a.evidence&&a.evidence[0])||{};
     const div=document.createElement('div');
     div.className='alert '+a.category;
-    div.dataset.id=id;
-    div.innerHTML=`<span class=”conf”>${a.confidence_score?.toFixed(2)||''} confidence</span>
-      <div class=”cat ${a.category}”>${a.category.replace('_',' ')}</div>
-      <div class=”claim”>”${esc(a.claim_text)}”</div>
-      ${ev.source?`<div class=”src”>Source: ${esc(ev.source)} — ${esc(ev.snippet||'')}</div>`:''}
-      ${a.suggested_response?`<div class=”sug”>💬 ${esc(a.suggested_response)}</div>`:''}`;
-    if(i===0) box.prepend(div);
-    else box.insertBefore(div,box.children[i]);
+    div.dataset.cid=cid;
+    div.innerHTML=`<div class=”alert-header”>
+      <span class=”alert-badge”><span class=”badge-icon”>${b.icon}</span>${b.label.toUpperCase()}</span>
+      <span class=”alert-claim”>${esc(a.claim_text)}</span>
+      <span class=”alert-chevron”>▾</span>
+    </div>
+    <div class=”alert-body”>
+      <span class=”alert-conf”>${a.confidence_score?Math.round(a.confidence_score*100)+'% conf':''}</span>
+      ${ev.source?`<div class=”alert-src”>📚 ${esc(ev.source)}${ev.snippet?' — '+esc(ev.snippet.slice(0,120)):''}</div>`:''}
+      ${a.suggested_response?`<div class=”alert-sug”>💬 ${esc(a.suggested_response)}</div>`:''}
+    </div>`;
+    div.querySelector('.alert-header').onclick=()=>div.classList.toggle('open');
+    box.insertBefore(div, box.firstChild);
   });
+  /* hide filtered-out items */
+  [...box.querySelectorAll('.alert')].forEach(el=>{
+    const a=allAlerts.find(x=>x.claim_text.slice(0,60)===el.dataset.cid);
+    el.classList.toggle('hidden', !a||(activeFilter!=='all'&&a.category!==activeFilter));
+  });
+}
+function updateStats(){
+  const c={VERIFIED:0,CONTRADICTED:0,UNVERIFIED:0,OUTDATED:0,NEEDS_CLARIFICATION:0};
+  allAlerts.forEach(a=>{c[a.category]=(c[a.category]||0)+1});
+  $('statsInline').textContent=allAlerts.length?
+    `${allAlerts.length} claims · ✓${c.VERIFIED} ✗${c.CONTRADICTED} ?${c.UNVERIFIED}`:'';
+}
 
-  const allAlertElems=[...box.querySelectorAll('.alert')];
-  allAlertElems.forEach(el=>{
-    if(!filtered.some(a=>a.claim_text===el.querySelector('.claim').textContent)){
-      el.classList.add('hidden');
-    }else{
-      el.classList.remove('hidden');
+/* ── waveform ── */
+let waveAnim=null;
+function animateWave(){
+  const canvas=$('waveCanvas');
+  const ctx=canvas.getContext('2d');
+  let frame=0;
+  function draw(){
+    canvas.width=canvas.offsetWidth; canvas.height=canvas.offsetHeight;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    const bars=60, w=canvas.width/bars, h=canvas.height;
+    for(let i=0;i<bars;i++){
+      const amp=Math.sin(i*0.4+frame*0.12)*0.4+0.5;
+      const bh=amp*(h*0.7)+4;
+      const r=i%3===0?220:80, g=i%3===1?60:80, b=i%3===2?80:80;
+      ctx.fillStyle=`rgba(${r},${g},${b},0.7)`;
+      ctx.beginPath();
+      ctx.roundRect(i*w+1,(h-bh)/2,w-2,bh,2);
+      ctx.fill();
     }
-  });
-
-  if(filtered.length===0) box.innerHTML='<div class=”empty”>No alerts match your filters.</div>';
-}
-
-function togglePanels(){
-  panelsHidden=!panelsHidden;
-  const header=document.querySelector('header');
-  const side=document.querySelector('.side');
-  const wrap=document.querySelector('.wrap');
-  const toggleBtn=$('togglePanelsBtn');
-  const fullscreenBtn=$('toggleFullscreenBtn');
-
-  if(panelsHidden){
-    header.classList.add('hidden');
-    side.classList.add('hidden');
-    wrap.classList.add('fullscreen');
-    toggleBtn.style.display='none';
-    fullscreenBtn.classList.remove('hidden');
-  }else{
-    header.classList.remove('hidden');
-    side.classList.remove('hidden');
-    wrap.classList.remove('fullscreen');
-    toggleBtn.style.display='inline-block';
-    fullscreenBtn.classList.add('hidden');
+    frame++;
+    waveAnim=requestAnimationFrame(draw);
   }
+  if(waveAnim) cancelAnimationFrame(waveAnim);
+  draw();
+  setTimeout(()=>{cancelAnimationFrame(waveAnim);waveAnim=null;},800);
 }
 
+/* ── session control ── */
 async function start(){
   const r=await fetch('/api/session/start',{method:'POST'});
   const j=await r.json(); sid=j.session_id;
   history.replaceState(null,'','/?session='+sid);
-  $('cmd').innerHTML='<div class=”cmd”>Run the audio streamer:\npy phase1_audio_streaming.py --server '+location.origin+' --session '+sid+'</div>';
+  const cmd='python3 phase1_audio_streaming.py --server '+location.origin+' --session '+sid;
+  $('cmd').innerHTML='<div class=”cmd”>'+esc(cmd)+'</div>';
+  $('cmd').style.display='block';
   $('alerts').innerHTML='<div class=”empty”>Listening… alerts will appear here.</div>';
   allAlerts=[];
+  $('transcriptBody').innerHTML='<span style=”color:#555”>Waiting for audio...</span>';
   startedUI(); connectWS(sid);
 }
-async function end(){ if(!sid)return; await fetch('/api/session/'+sid+'/end',{method:'POST'}); }
-function startedUI(){ $('startBtn').style.display='none'; $('endBtn').style.display='inline-block'; $('status').textContent='listening'; }
-function endedUI(){ sid=null; if(ws){ws.close();ws=null;} $('endBtn').style.display='none'; $('startBtn').style.display='inline-block'; $('status').textContent='idle'; $('cmd').innerHTML=''; allAlerts=[]; }
+async function stop(){ if(!sid)return; await fetch('/api/session/'+sid+'/end',{method:'POST'}); }
 
+function startedUI(){
+  isLive=true;
+  $('startBtn').style.display='none'; $('endBtn').style.display='inline-block';
+  $('status').textContent='listening';
+  $('recordBtn').classList.add('active');
+}
+function endedUI(){
+  isLive=false; sid=null;
+  if(ws){ws.close();ws=null;}
+  $('endBtn').style.display='none'; $('startBtn').style.display='inline-block';
+  $('status').textContent='idle'; $('cmd').style.display='none';
+  allAlerts=[]; $('recordBtn').classList.remove('active');
+}
+
+/* ── panels ── */
+function toggleHistory(){
+  const side=$('sidePanel'), btn=$('togglePanelsBtn'), fb=$('toggleFullscreenBtn');
+  const hidden=side.classList.toggle('hidden');
+  btn.textContent=hidden?'Show history':'Hide history';
+  fb.classList.toggle('hidden',!hidden);
+}
+$('hideTranscriptBtn').onclick=()=>$('transcriptPanel').classList.toggle('hidden');
+
+/* ── history ── */
 async function loadHistory(){
   const r=await fetch('/api/meetings'); const list=await r.json();
-  $('history').innerHTML = list.length?'':'<div class=”empty” style=”margin-top:10px”>No saved meetings yet.</div>';
+  $('history').innerHTML=list.length?'':'<div class=”empty” style=”margin-top:10px”>No saved meetings yet.</div>';
   list.forEach(m=>{
     const d=document.createElement('div'); d.className='mtg';
-    d.innerHTML=`<span class=”del” data-n=”${esc(m.name)}”>✕</span>
-      <div class=”nm”>${esc(m.name)}</div>
+    d.innerHTML=`<span class=”del”>✕</span><div class=”nm”>${esc(m.name)}</div>
       <div class=”meta”>${m.total_claims} claims · 🔴 ${m.contradicted} · ⚠ ${m.critical_issues} critical</div>`;
     d.onclick=ev=>{ if(ev.target.classList.contains('del')){del(m.name);ev.stopPropagation();} else view(m.name); };
     $('history').appendChild(d);
@@ -445,8 +484,8 @@ async function view(name){
   const s=(j.report&&j.report.summary)||{};
   $('modalBox').innerHTML=`<h2>${esc(name)}</h2>
     <p>${s.total_claims||0} claims · 🟢 ${s.verified||0} · 🔴 ${s.contradicted||0} · 🟡 ${s.unverified||0} · ⏰ ${s.outdated||0} · ❓ ${s.needs_clarification||0}</p>
-    <pre style=”white-space:pre-wrap;font-size:13px”>${esc((j.transcript||'').slice(0,4000))}</pre>
-    <button onclick=”document.getElementById('modal').style.display='none'”>Close</button>`;
+    <pre style=”white-space:pre-wrap;font-size:13px;color:#bbb”>${esc((j.transcript||'').slice(0,4000))}</pre>
+    <button onclick=”document.getElementById('modal').style.display='none'” style=”margin-top:12px;background:#333;color:#ddd;border:1px solid #555”>Close</button>`;
   $('modal').style.display='flex';
 }
 async function del(name){ if(!confirm('Delete '+name+'?'))return; await fetch('/api/meetings/'+encodeURIComponent(name),{method:'DELETE'}); loadHistory(); }
@@ -454,20 +493,21 @@ async function del(name){ if(!confirm('Delete '+name+'?'))return; await fetch('/
 function toast(t){ const e=document.createElement('div'); e.className='toast'; e.textContent=t; document.body.appendChild(e); setTimeout(()=>e.remove(),4000); }
 function esc(s){ return (s||'').replace(/[&<>”]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','”':'&quot;'}[c])); }
 
+/* ── bindings ── */
 $('startBtn').onclick=start;
-$('endBtn').onclick=end;
-$('togglePanelsBtn').onclick=togglePanels;
-$('toggleFullscreenBtn').onclick=togglePanels;
-$('searchInput').oninput=applyFiltersAndSort;
-$('sortSelect').onchange=e=>{currentSort=e.target.value;applyFiltersAndSort();};
+$('endBtn').onclick=stop;
+$('recordBtn').onclick=()=>{ if(isLive) stop(); else start(); };
+$('togglePanelsBtn').onclick=toggleHistory;
+$('toggleFullscreenBtn').onclick=toggleHistory;
 document.querySelectorAll('.filter-btn').forEach(btn=>{
   btn.onclick=e=>{
     document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
     e.target.classList.add('active');
     activeFilter=e.target.dataset.filter;
-    applyFiltersAndSort();
+    renderAlerts();
   };
 });
+$('modal').onclick=e=>{ if(e.target===$('modal')) $('modal').style.display='none'; };
 
 loadHistory();
 if(params.get('session')){ sid=params.get('session'); startedUI(); connectWS(sid); }
